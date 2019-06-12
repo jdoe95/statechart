@@ -1,54 +1,100 @@
-/* ******************************************************
- * statechart.c
- * @brief
- * @details
- ********************************************************/
+/*
+ * C Statechart Library Header
+ * Author: John Buyi Yu jdoe35087@gmail.com
+ */
+#include <stddef.h>
 #include "statechart.h"
 
-void sc_machine_init( void *p_context,
-		const struct sc_state *p_initial )
-{
-	struct sc_context *p_machine = (struct sc_context*)p_context;
+#if !defined(SC_MAX_DEPTH)
+#	define SC_MAX_DEPTH (10U)   /* maximum depth of parent and child states */
+#endif
 
-	p_machine->p_current = p_initial;
-	p_initial->on_entry(p_context);
+#if !defined(SC_BUG_ON)
+#   define SC_BUG_ON(cond)     /* runtime bug catcher */
+#endif
+
+void sc_init(void *context, const struct sc_state *initial)
+{
+	SC_BUG_ON(context == NULL);
+	SC_BUG_ON(initial == NULL);
+
+	struct sc_context *context_typed;
+
+	context_typed = (struct sc_context*)context;
+	context_typed->current = initial;
+	initial->entry(context);
 }
 
-/**
- * \brief Transitions from source state to target state
- * \param p_context pointer to the machine context storage
- * \param p_this pointer to current state descriptor
- * \param p_target pointer to target state descriptor
- * \details This function is called when the state wants to
- * make a transition.
- * \return none
+/*
+ * Dispatches an event to the state machine.
+ * The state machine first dispatches the event to the leaf state (inner most state) and if not
+ * handled, its parent state will attempt to handle it until the event is propagated all the way up
+ * to the top, where it will be discarded.
  */
-void sc_machine_trans( void *p_context, const struct sc_state *p_target )
+
+void sc_dispatch(void *context, const void* event)
 {
-	// get machine context
-	struct sc_context *p_machine = (struct sc_context*) p_context;
+	SC_BUG_ON(context == NULL);
 
-	BUG_ON(p_context == NULL );
-	BUG_ON(p_target == NULL);
+	struct sc_context *context_typed;
+	context_typed = (struct sc_context*)context;
 
-	// corrupted context
-	// make sure machine is initialized
-	// make sure first member of context is base context instance
-	BUG_ON(p_machine->p_current == NULL);
+	/*
+	 * Corrupted context:
+	 * 1. make sure machine is initialized, and
+	 * 2. make sure first member of context is base context instance
+	 */
+	SC_BUG_ON(context_typed->current == NULL);
+
+	const struct sc_state *iter;
+	enum sc_handler_result result;
+
+	for (iter = context_typed->current; iter != NULL; iter = iter->parent)
+	{
+		/*
+		 * Dispatch the event to the leaf state, if unhandled in leaf state, propagate up to its
+		 * parent state.
+		 */
+		if (iter->handler != NULL)
+		{
+			result = iter->handler(context, event);
+
+			if ((result == SC_HANDLER_RESULT_HANDLED) || (result == SC_HANDLER_RESULT_IGNORE))
+				break; /* stop the propagation */
+		}
+	}
+}
+
+/*
+ * Transitions from current state to target state
+ */
+void sc_trans(void *context, const struct sc_state *target )
+{
+	SC_BUG_ON(context == NULL);
+	SC_BUG_ON(target == NULL);
+
+	struct sc_context *context_typed;
+	context_typed = (struct sc_context*)context;
+
+	/*
+	 * Corrupted context:
+	 * 1. Make sure machine is initialized, and
+	 * 2. Make sure first member of context is base context instance.
+	 */
+	SC_BUG_ON(context_typed->current == NULL);
 
 	/*
 	 * Implements a lowest common ancestor (LCA) search algorithm
-	 * Time complexity is O(h) where h is the height of the tree.
 	 *
-	 * The purpose is to find a path that exits the source state
-	 * and enters into the target state.
+	 * Time complexity is O(h) where h is the height of the tree.
+	 * The purpose is to find a path that exits the source state and enters into the target state.
 	 *
 	 * See an animation of this algorithm here.
 	 * https://thimbleby.gitlab.io/algorithm-wiki-site/wiki/lowest_common_ancestor/
 	 *
-	 * The search starts with writing source state and all its parents
-	 * into array exit_chain, then searching for target or its parent
-	 * in exit_chain while saving target and its parent into enter_chain.
+	 * The search starts with writing source state and all its parents into array exit_chain, then
+	 * searching for target or its parent in exit_chain while saving target and its parent into
+	 * enter_chain.
 	 */
 	const struct sc_state *exit_chain[SC_MAX_DEPTH];
 	const struct sc_state *enter_chain[SC_MAX_DEPTH];
@@ -56,129 +102,82 @@ void sc_machine_trans( void *p_context, const struct sc_state *p_target )
 	unsigned exit_index, exit_depth;
 	unsigned enter_index, enter_depth;
 
-	// from source state to its topmost state
-	exit_index = 0;
-	for( const struct sc_state *p_iter = p_machine->p_current;
-			p_iter != NULL; p_iter = p_iter->p_parent )
-	{
-		// source state nested too deep
-		// increase SC_MAX_DEPTH
-		BUG_ON(exit_index >= SC_MAX_DEPTH);
+	enter_depth = 0U;
+	enter_index = 0U;
+	exit_depth = 0U;
+	exit_index = 0U;
 
-		exit_chain[exit_index++] = p_iter;
+	/* from source state to its topmost state */
+	for (const struct sc_state *iter = context_typed->current; iter != NULL; iter = iter->parent)
+	{
+		/* source state nested too deep. Increase SC_MAX_DEPTH! */
+		SC_BUG_ON(exit_index >= SC_MAX_DEPTH);
+
+		exit_chain[exit_index++] = iter;
 	}
 
-	// from target state to LCA, or target's topmost state
-	enter_index = 0;
-	for( const struct sc_state *p_iter = p_target; p_iter != NULL;
-			p_iter = p_iter->p_parent )
+	/* from target state to LCA, or target's topmost state */
+	for (const struct sc_state *iter = target; iter != NULL; iter = iter->parent)
 	{
-		// target state nested too deep
-		// increase SC_MAX_DEPTH
-		BUG_ON(enter_index >= SC_MAX_DEPTH);
+		/* Target state nested too deep. Increase SC_MAX_DEPTH! */
+		SC_BUG_ON(enter_index >= SC_MAX_DEPTH);
 
-		enter_chain[enter_index] = p_iter;
+		enter_chain[enter_index] = iter;
 
-		for( unsigned counter = 0; counter < exit_index; counter++ )
+		for (unsigned counter = 0U; counter < exit_index; counter++)
 		{
-			// LCA found
-			if( exit_chain[counter] == p_iter ) {
+			/* LCA found */
+			if (exit_chain[counter] == iter)
+			{
 				exit_depth = counter;
 				enter_depth = enter_index;
-				goto with_ancestor;
+				break;
 			}
 		}
 
 		enter_index++;
 	}
-	// no common ancestor is found when the loop exits this way
-	exit_depth = exit_index;
-	enter_depth = enter_index;
 
-	const struct sc_state *p_state;
-
-	// if no common ancestor is found, the two states are in distinct
-	// hierarchies. Perform the transition at the top level.
-with_ancestor:
-
-	// exit source state
-	for( unsigned counter = 0; counter < exit_depth; counter++ )
+	/* LCA found */
+	if (enter_depth && exit_depth)
 	{
-		p_state = exit_chain[counter];
+		const struct sc_state *state;
 
-		if( p_state->on_exit != NULL )
-			p_state->on_exit(p_context);
+		/* exit source state */
+		for (unsigned counter = 0U; counter < exit_depth; counter++)
+		{
+			state = exit_chain[counter];
+
+			if( state->exit != NULL )
+				state->exit(context);
+		}
+
+		/* enter target state */
+		for (unsigned counter = enter_depth; counter > 0U; counter--)
+		{
+			state = enter_chain[counter-1];
+
+			if( state->entry != NULL )
+				state->entry(context);
+		}
+
+		/* enter default child state */
+		const struct sc_state *current = target;
+		for (const struct sc_state *iter = target->child; iter != NULL; iter = iter->child)
+		{
+			iter->entry(context);
+			current = iter;
+		}
+
+		/* update current state */
+		context_typed->current = current;
 	}
 
-	// enter target state
-	for( unsigned counter = enter_depth; counter > 0; counter-- )
+	/* LCA not found. The two states are not in the same state machine */
+	else
 	{
-		p_state = enter_chain[counter-1];
-
-		if( p_state->on_entry != NULL )
-			p_state->on_entry(p_context);
-	}
-
-	// enter default child state
-	const struct sc_state *p_current = p_target;
-	for( const struct sc_state *p_iter = p_target->p_default;
-			p_iter != NULL; p_iter = p_iter->p_default )
-	{
-		p_iter->on_entry(p_context);
-		p_current = p_iter;
-	}
-
-	// update current state
-	p_machine->p_current = p_current;
-}
-
-/**
- * \brief Dispatches an event to the state machine
- * \param p_context pointer to the state machine context storage
- * \param p_event pointer to a state machine event object
- * \details The state machine first dispatches the event to the
- * leaf state (inner most state) and if not handled, its parent
- * state will attempt to handle it until the event is propagated
- * all the way up to the top, where it will be discarded.
- */
-void sc_machine_dispatch( void *p_context, sc_event_t event )
-{
-	// get machine context
-	struct sc_context *p_machine = (struct sc_context*) p_context;
-
-	BUG_ON(p_context == NULL);
-
-	// corrupted context
-	// make sure machine is initialized
-	// make sure first member of context is base context instance
-	BUG_ON(p_machine->p_current == NULL);
-
-	const struct sc_state *p_iter;
-	sc_result_t result;
-
-	for( p_iter = p_machine->p_current; p_iter != NULL;
-			p_iter = p_iter->p_parent )
-	{
-		// dispatch the event to the leaf state
-		// if unhandled in leaf state, propagate up to its parent state
-
-		// no handlers registered in leaf state
-		if( p_iter->on_event == NULL )
-			continue; // propagate up
-
-		result = p_iter->on_event(p_context, event);
-
-		// handled by leaf state
-		if( result == SC_HANDLED )
-			break; // stop the propagation
-
-		// ignored by leaf state because a guard condition evaluated false
-		else if( result == SC_IGNORED )
-			break; // stop the propagation
-
-		// unhandled by leaf state
-		else if (result == SC_UNHANDLED )
-			continue; // propagate up
-
+		SC_BUG_ON(0U);
 	}
 }
+
+
