@@ -176,7 +176,7 @@ void sc_trans(void *context, const struct sc_state *target )
 	/* LCA not found. The two states are not in the same state machine */
 	else
 	{
-		SC_BUG_ON(0U);
+		SC_BUG_ON(1U);
 	}
 }
 
