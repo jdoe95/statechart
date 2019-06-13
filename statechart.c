@@ -35,6 +35,7 @@ void sc_init(void *context, const struct sc_state *initial)
 void sc_dispatch(void *context, const void* event)
 {
 	SC_BUG_ON(context == NULL);
+    SC_BUG_ON(event == NULL);
 
 	struct sc_context *context_typed;
 	context_typed = (struct sc_context*)context;
