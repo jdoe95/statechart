@@ -43,12 +43,6 @@ struct sc_state
 	sc_handler_type handler;          /* event handler       */
 };
 
-/*
- * Macros for type casting
- */
-#define SC_ENTRY_FUNC(func) ((sc_entry_type)(func))
-#define SC_EXIT_FUNC(func)  ((sc_exit_type )(func))
-#define SC_EVENT_FUNC(func) ((sc_handler_type)(func))
 void sc_init(void *ctx, const struct sc_state *initial);
 void sc_dispatch(void *ctx, const void *evt);
 void sc_trans(void *ctx, const struct sc_state *target );
