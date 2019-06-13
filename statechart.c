@@ -21,8 +21,8 @@ void sc_init(void *ctx, const struct sc_state *initial)
 	struct sc_context *context;
 
 	context = (struct sc_context*)ctx;
-	context->current = initial;
-	initial->entry(ctx);
+    context->current = NULL;
+    sc_trans(ctx, initial);
 }
 
 /*
@@ -100,8 +100,8 @@ void sc_trans(void *ctx, const struct sc_state *target)
 	const struct sc_state *exit_chain[SC_MAX_DEPTH];
 	const struct sc_state *enter_chain[SC_MAX_DEPTH];
 
-	unsigned exit_index, exit_depth;
-	unsigned enter_index, enter_depth;
+	size_t exit_index, exit_depth;
+	size_t enter_index, enter_depth;
 
 	enter_depth = 0U;
 	enter_index = 0U;
@@ -125,7 +125,7 @@ void sc_trans(void *ctx, const struct sc_state *target)
 
 		enter_chain[enter_index] = iter;
 
-		for (unsigned counter = 0U; counter < exit_index; counter++)
+		for (size_t counter = 0U; counter < exit_index; counter++)
 		{
 			/* LCA found */
 			if (exit_chain[counter] == iter)
@@ -139,44 +139,36 @@ void sc_trans(void *ctx, const struct sc_state *target)
 		enter_index++;
 	}
 
-	/* LCA found */
-	if (enter_depth && exit_depth)
-	{
-		const struct sc_state *state;
+    const struct sc_state *state;
 
-		/* exit source state */
-		for (unsigned counter = 0U; counter < exit_depth; counter++)
-		{
-			state = exit_chain[counter];
+    /* exit source state */
+    for (size_t counter = 0U; counter < exit_depth; counter++)
+    {
+        state = exit_chain[counter];
 
-			if( state->exit != NULL )
-				state->exit(ctx);
-		}
+        if( state->exit != NULL )
+            state->exit(ctx);
+    }
 
-		/* enter target state */
-		for (unsigned counter = enter_depth; counter > 0U; counter--)
-		{
-			state = enter_chain[counter-1];
+    /* enter target state */
+    for (size_t counter = enter_depth; counter > 0U; counter--)
+    {
+        state = enter_chain[counter-1U];
 
-			if( state->entry != NULL )
-				state->entry(ctx);
-		}
+        if( state->entry != NULL )
+            state->entry(ctx);
+    }
 
-		/* enter default child state */
-		const struct sc_state *current = target;
-		for (const struct sc_state *iter = target->child; iter != NULL; iter = iter->child)
-		{
-			iter->entry(ctx);
-			current = iter;
-		}
+    /* enter default child state */
+    const struct sc_state *current = target;
+    for (const struct sc_state *iter = target->child; iter != NULL; iter = iter->child)
+    {
+        if (iter->entry != NULL)
+            iter->entry(ctx);
+        
+        current = iter;
+    }
 
-		/* update current state */
-		context->current = current;
-	}
-
-	/* LCA not found. The two states are not in the same state machine */
-	else
-	{
-		SC_BUG_ON(1U);
-	}
+    /* update current state */
+    context->current = current;
 }
