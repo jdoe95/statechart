@@ -21,8 +21,8 @@ void sc_init(void *ctx, const struct sc_state *initial)
 	struct sc_context *context;
 
 	context = (struct sc_context*)ctx;
-	context->current = initial;
-	initial->entry(ctx);
+    context->current = NULL;
+    sc_trans(ctx, initial);
 }
 
 /*
@@ -78,13 +78,6 @@ void sc_trans(void *ctx, const struct sc_state *target)
 	context = (struct sc_context*)ctx;
 
 	/*
-	 * Corrupted context:
-	 * 1. Make sure machine is initialized, and
-	 * 2. Make sure first member of context is base context instance.
-	 */
-	SC_BUG_ON(context->current == NULL);
-
-	/*
 	 * Implements a lowest common ancestor (LCA) search algorithm
 	 *
 	 * Time complexity is O(h) where h is the height of the tree.
@@ -100,8 +93,8 @@ void sc_trans(void *ctx, const struct sc_state *target)
 	const struct sc_state *exit_chain[SC_MAX_DEPTH];
 	const struct sc_state *enter_chain[SC_MAX_DEPTH];
 
-	unsigned exit_index, exit_depth;
-	unsigned enter_index, enter_depth;
+	size_t exit_index, exit_depth;
+	size_t enter_index, enter_depth;
 
 	enter_depth = 0U;
 	enter_index = 0U;
@@ -117,6 +110,8 @@ void sc_trans(void *ctx, const struct sc_state *target)
 		exit_chain[exit_index++] = iter;
 	}
 
+	exit_depth = exit_index;
+
 	/* from target state to LCA, or target's topmost state */
 	for (const struct sc_state *iter = target; iter != NULL; iter = iter->parent)
 	{
@@ -125,13 +120,12 @@ void sc_trans(void *ctx, const struct sc_state *target)
 
 		enter_chain[enter_index] = iter;
 
-		for (unsigned counter = 0U; counter < exit_index; counter++)
+		for (size_t counter = 0U; counter < exit_index; counter++)
 		{
 			/* LCA found */
 			if (exit_chain[counter] == iter)
 			{
 				exit_depth = counter;
-				enter_depth = enter_index;
 				break;
 			}
 		}
@@ -139,44 +133,38 @@ void sc_trans(void *ctx, const struct sc_state *target)
 		enter_index++;
 	}
 
-	/* LCA found */
-	if (enter_depth && exit_depth)
-	{
-		const struct sc_state *state;
+	enter_depth = enter_index;
 
-		/* exit source state */
-		for (unsigned counter = 0U; counter < exit_depth; counter++)
-		{
-			state = exit_chain[counter];
+    const struct sc_state *state;
 
-			if( state->exit != NULL )
-				state->exit(ctx);
-		}
+    /* exit source state */
+    for (size_t counter = 0U; counter < exit_depth; counter++)
+    {
+        state = exit_chain[counter];
 
-		/* enter target state */
-		for (unsigned counter = enter_depth; counter > 0U; counter--)
-		{
-			state = enter_chain[counter-1];
+        if( state->exit != NULL )
+            state->exit(ctx);
+    }
 
-			if( state->entry != NULL )
-				state->entry(ctx);
-		}
+    /* enter target state */
+    for (size_t counter = enter_depth; counter > 0U; counter--)
+    {
+        state = enter_chain[counter-1U];
 
-		/* enter default child state */
-		const struct sc_state *current = target;
-		for (const struct sc_state *iter = target->child; iter != NULL; iter = iter->child)
-		{
-			iter->entry(ctx);
-			current = iter;
-		}
+        if( state->entry != NULL )
+            state->entry(ctx);
+    }
 
-		/* update current state */
-		context->current = current;
-	}
+    /* enter default child state */
+    const struct sc_state *current = target;
+    for (const struct sc_state *iter = target->child; iter != NULL; iter = iter->child)
+    {
+        if (iter->entry != NULL)
+            iter->entry(ctx);
+        
+        current = iter;
+    }
 
-	/* LCA not found. The two states are not in the same state machine */
-	else
-	{
-		SC_BUG_ON(1U);
-	}
+    /* update current state */
+    context->current = current;
 }
