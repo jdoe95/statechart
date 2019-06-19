@@ -13,16 +13,16 @@
 #   define SC_BUG_ON(cond)     /* runtime bug catcher */
 #endif
 
-void sc_init(void *context, const struct sc_state *initial)
+void sc_init(void *ctx, const struct sc_state *initial)
 {
-	SC_BUG_ON(context == NULL);
+	SC_BUG_ON(ctx == NULL);
 	SC_BUG_ON(initial == NULL);
 
-	struct sc_context *context_typed;
+	struct sc_context *context;
 
-	context_typed = (struct sc_context*)context;
-	context_typed->current = initial;
-	initial->entry(context);
+	context = (struct sc_context*)ctx;
+    context->current = NULL;
+    sc_trans(ctx, initial);
 }
 
 /*
@@ -32,24 +32,25 @@ void sc_init(void *context, const struct sc_state *initial)
  * to the top, where it will be discarded.
  */
 
-void sc_dispatch(void *context, const void* event)
+void sc_dispatch(void *ctx, const void* evt)
 {
-	SC_BUG_ON(context == NULL);
+	SC_BUG_ON(ctx == NULL);
+    SC_BUG_ON(evt == NULL);
 
-	struct sc_context *context_typed;
-	context_typed = (struct sc_context*)context;
+	struct sc_context *context;
+	context = (struct sc_context*)ctx;
 
 	/*
 	 * Corrupted context:
 	 * 1. make sure machine is initialized, and
 	 * 2. make sure first member of context is base context instance
 	 */
-	SC_BUG_ON(context_typed->current == NULL);
+	SC_BUG_ON(context->current == NULL);
 
 	const struct sc_state *iter;
 	enum sc_handler_result result;
 
-	for (iter = context_typed->current; iter != NULL; iter = iter->parent)
+	for (iter = context->current; iter != NULL; iter = iter->parent)
 	{
 		/*
 		 * Dispatch the event to the leaf state, if unhandled in leaf state, propagate up to its
@@ -57,7 +58,7 @@ void sc_dispatch(void *context, const void* event)
 		 */
 		if (iter->handler != NULL)
 		{
-			result = iter->handler(context, event);
+			result = iter->handler(ctx, evt);
 
 			if ((result == SC_HANDLER_RESULT_HANDLED) || (result == SC_HANDLER_RESULT_IGNORE))
 				break; /* stop the propagation */
@@ -68,20 +69,13 @@ void sc_dispatch(void *context, const void* event)
 /*
  * Transitions from current state to target state
  */
-void sc_trans(void *context, const struct sc_state *target )
+void sc_trans(void *ctx, const struct sc_state *target)
 {
-	SC_BUG_ON(context == NULL);
+	SC_BUG_ON(ctx == NULL);
 	SC_BUG_ON(target == NULL);
 
-	struct sc_context *context_typed;
-	context_typed = (struct sc_context*)context;
-
-	/*
-	 * Corrupted context:
-	 * 1. Make sure machine is initialized, and
-	 * 2. Make sure first member of context is base context instance.
-	 */
-	SC_BUG_ON(context_typed->current == NULL);
+	struct sc_context *context;
+	context = (struct sc_context*)ctx;
 
 	/*
 	 * Implements a lowest common ancestor (LCA) search algorithm
@@ -99,8 +93,8 @@ void sc_trans(void *context, const struct sc_state *target )
 	const struct sc_state *exit_chain[SC_MAX_DEPTH];
 	const struct sc_state *enter_chain[SC_MAX_DEPTH];
 
-	unsigned exit_index, exit_depth;
-	unsigned enter_index, enter_depth;
+	size_t exit_index, exit_depth;
+	size_t enter_index, enter_depth;
 
 	enter_depth = 0U;
 	enter_index = 0U;
@@ -108,13 +102,15 @@ void sc_trans(void *context, const struct sc_state *target )
 	exit_index = 0U;
 
 	/* from source state to its topmost state */
-	for (const struct sc_state *iter = context_typed->current; iter != NULL; iter = iter->parent)
+	for (const struct sc_state *iter = context->current; iter != NULL; iter = iter->parent)
 	{
 		/* source state nested too deep. Increase SC_MAX_DEPTH! */
 		SC_BUG_ON(exit_index >= SC_MAX_DEPTH);
 
 		exit_chain[exit_index++] = iter;
 	}
+
+	exit_depth = exit_index;
 
 	/* from target state to LCA, or target's topmost state */
 	for (const struct sc_state *iter = target; iter != NULL; iter = iter->parent)
@@ -124,13 +120,12 @@ void sc_trans(void *context, const struct sc_state *target )
 
 		enter_chain[enter_index] = iter;
 
-		for (unsigned counter = 0U; counter < exit_index; counter++)
+		for (size_t counter = 0U; counter < exit_index; counter++)
 		{
 			/* LCA found */
 			if (exit_chain[counter] == iter)
 			{
 				exit_depth = counter;
-				enter_depth = enter_index;
 				break;
 			}
 		}
@@ -138,46 +133,38 @@ void sc_trans(void *context, const struct sc_state *target )
 		enter_index++;
 	}
 
-	/* LCA found */
-	if (enter_depth && exit_depth)
-	{
-		const struct sc_state *state;
+	enter_depth = enter_index;
 
-		/* exit source state */
-		for (unsigned counter = 0U; counter < exit_depth; counter++)
-		{
-			state = exit_chain[counter];
+    const struct sc_state *state;
 
-			if( state->exit != NULL )
-				state->exit(context);
-		}
+    /* exit source state */
+    for (size_t counter = 0U; counter < exit_depth; counter++)
+    {
+        state = exit_chain[counter];
 
-		/* enter target state */
-		for (unsigned counter = enter_depth; counter > 0U; counter--)
-		{
-			state = enter_chain[counter-1];
+        if( state->exit != NULL )
+            state->exit(ctx);
+    }
 
-			if( state->entry != NULL )
-				state->entry(context);
-		}
+    /* enter target state */
+    for (size_t counter = enter_depth; counter > 0U; counter--)
+    {
+        state = enter_chain[counter-1U];
 
-		/* enter default child state */
-		const struct sc_state *current = target;
-		for (const struct sc_state *iter = target->child; iter != NULL; iter = iter->child)
-		{
-			iter->entry(context);
-			current = iter;
-		}
+        if( state->entry != NULL )
+            state->entry(ctx);
+    }
 
-		/* update current state */
-		context_typed->current = current;
-	}
+    /* enter default child state */
+    const struct sc_state *current = target;
+    for (const struct sc_state *iter = target->child; iter != NULL; iter = iter->child)
+    {
+        if (iter->entry != NULL)
+            iter->entry(ctx);
+        
+        current = iter;
+    }
 
-	/* LCA not found. The two states are not in the same state machine */
-	else
-	{
-		SC_BUG_ON(0U);
-	}
+    /* update current state */
+    context->current = current;
 }
-
-
