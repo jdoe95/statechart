@@ -78,13 +78,6 @@ void sc_trans(void *ctx, const struct sc_state *target)
 	context = (struct sc_context*)ctx;
 
 	/*
-	 * Corrupted context:
-	 * 1. Make sure machine is initialized, and
-	 * 2. Make sure first member of context is base context instance.
-	 */
-	SC_BUG_ON(context->current == NULL);
-
-	/*
 	 * Implements a lowest common ancestor (LCA) search algorithm
 	 *
 	 * Time complexity is O(h) where h is the height of the tree.
@@ -117,6 +110,8 @@ void sc_trans(void *ctx, const struct sc_state *target)
 		exit_chain[exit_index++] = iter;
 	}
 
+	exit_depth = exit_index;
+
 	/* from target state to LCA, or target's topmost state */
 	for (const struct sc_state *iter = target; iter != NULL; iter = iter->parent)
 	{
@@ -131,13 +126,14 @@ void sc_trans(void *ctx, const struct sc_state *target)
 			if (exit_chain[counter] == iter)
 			{
 				exit_depth = counter;
-				enter_depth = enter_index;
 				break;
 			}
 		}
 
 		enter_index++;
 	}
+
+	enter_depth = enter_index;
 
     const struct sc_state *state;
 
