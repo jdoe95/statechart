@@ -1,50 +1,83 @@
 /*
- * C Statechart Library Header
- * Author: John Buyi Yu jdoe35087@gmail.com
+ * C StateChart Library
+ * John Yu created on June 12 2019
+ * Dialect C99
  */
 #ifndef HC774DDE3_D18C_4B37_B601_74395ADDF8FA
 #define HC774DDE3_D18C_4B37_B601_74395ADDF8FA
 
+
+
 /*
- * Context base class
+ * An object of the struct represents a state machine. Members in this object should only be
+ * accessed by the StateChart Library.
  */
-struct sc_context
+struct sc_machine
 {
-	const struct sc_state *current;   /* current state           */
+	const struct sc_state *current;        /* Private: current active state  */
+	const struct sc_tran_info *tran_info;  /* Private: on-going transition info */
 };
 
+
+
 /*
- * Event handler return code
+ * Records transition information
  */
-enum sc_handler_result
+struct sc_tran_info
 {
-	SC_HANDLER_RESULT_UNHANDLED = 0U, /* event is unhandled      */
-	SC_HANDLER_RESULT_HANDLED,        /* event is handled        */
-	SC_HANDLER_RESULT_PROPAGATE,      /* event should propogate  */
-	SC_HANDLER_RESULT_IGNORE,         /* event should be ignored */
+	const struct sc_state *source;       /* Public: transition source state */
+	const struct sc_state *target;       /* Public: transition target state */
+	const struct sc_state *last_exited;  /* Public: last exited state during transition */
+	const struct sc_state *last_entered; /* Public: last entered state during transition */
 };
 
-/*
- * State handler prototypes
- */
-typedef void (*sc_entry_type)(void *ctx);
-typedef void (*sc_exit_type )(void *ctx);
-typedef enum sc_handler_result (*sc_handler_type)(void *ctx, const void *evt);
+
 
 /*
- * State descriptor type
+ * Return values of the state event handler. When the Library dispatches an event to the state
+ * event handler, the return value is checked to decide whether to forward the event to the parent
+ * state or not. Some return values might serve exactly the same purpose but using a different
+ * name allows them to self-document the source code.
+ */
+enum sc_result
+{
+	SC_UNHANDLED = 0, /* Event is not handled and should be forwarded to parents.     */
+	SC_HANDLED,       /* Event is handled and should be forwarded to parents.         */
+	SC_DISCARD,       /* Event should not be forwarded to parents.                    */
+	SC_FORWARD        /* Event should be forwarded to parents.                        */
+};
+
+
+
+/*
+ * State descriptor. An object of this struct represents a state in a state machine. The objects
+ * are usually defined with 'const', but you may define them as 'mutable' to create a state machine
+ * that can modify itself but this is strongly discouraged.
  */
 struct sc_state
 {
-	const struct sc_state* parent;    /* parent state        */
-	const struct sc_state* child;     /* default child state */
-	sc_entry_type entry;              /* entry action        */
-	sc_exit_type exit;                /* exit action         */
-	sc_handler_type handler;          /* event handler       */
+	const struct sc_state* parent;                              /* parent state        */
+	const struct sc_state* child;                               /* default child state */
+	void (*entry)(struct sc_machine *machine, void *m_data);    /* entry action        */
+	void (*exit)(struct sc_machine *machine, void *m_data);     /* exit action         */
+	enum sc_result (*handler)(struct sc_machine *machine, void *m_data, const void *e_data);
+																/* event handler       */
 };
 
-void sc_init(void *ctx, const struct sc_state *initial);
-void sc_dispatch(void *ctx, const void *evt);
-void sc_trans(void *ctx, const struct sc_state *target );
+
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+void sc_init(struct sc_machine *machine);
+void sc_dispatch(struct sc_machine *machine, void *m_data, const void *e_data);
+void sc_tran(struct sc_machine *machine, void *m_data, const struct sc_state *target,
+		void (*action)(struct sc_machine *machine, void *m_data));
+const struct sc_tran_info* sc_ongoing_tran_info(struct sc_machine *machine);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* HC774DDE3_D18C_4B37_B601_74395ADDF8FA */

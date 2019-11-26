@@ -1,170 +1,247 @@
 /*
- * C Statechart Library Header
- * Author: John Buyi Yu jdoe35087@gmail.com
+ * C StateChart Library
+ * John Yu created on June 12 2019
+ * Dialect C99
  */
 #include <stddef.h>
+#include <stdbool.h>
+#include <assert.h>
+
 #include "statechart.h"
 
-#if !defined(SC_MAX_DEPTH)
-#	define SC_MAX_DEPTH (10U)   /* maximum depth of parent and child states */
-#endif
 
-#if !defined(SC_BUG_ON)
-#   define SC_BUG_ON(cond)     /* runtime bug catcher */
-#endif
-
-void sc_init(void *ctx, const struct sc_state *initial)
-{
-	SC_BUG_ON(ctx == NULL);
-	SC_BUG_ON(initial == NULL);
-
-	struct sc_context *context;
-
-	context = (struct sc_context*)ctx;
-    context->current = NULL;
-    sc_trans(ctx, initial);
-}
 
 /*
- * Dispatches an event to the state machine.
- * The state machine first dispatches the event to the leaf state (inner most state) and if not
- * handled, its parent state will attempt to handle it until the event is propagated all the way up
- * to the top, where it will be discarded.
+ * The custom assertion macro adds a string to the standard assertion message for unit testing
+ * purposes. This works because the result of the expression is the result of the last expression
+ * in the expression, but when assertion fails, the whole expression is printed to stderr.
  */
+#define SC_ASSERT(COND) \
+	assert(" StateChart " && (COND))
 
-void sc_dispatch(void *ctx, const void* evt)
+
+
+/*
+ * The size of the array used to record tree traversal paths. Usually it is set to the maximum
+ * nesting depth of states. A stack overflow may occur when this value is too large.
+ */
+#ifndef SC_MAX_LIST
+#	define SC_MAX_LIST  ((size_t) 5)
+#endif
+
+
+
+/*
+ * Internal functions
+ */
+static bool is_forward_event(enum sc_result handler_result);
+static size_t path_to_root(const struct sc_state *vertex, const struct sc_state *path[]);
+static size_t find_vertex(const struct sc_state *vertex, const struct sc_state *const list[],
+		size_t valid_data);
+
+
+/*
+ * Initializes a state machine
+ */
+void sc_init(struct sc_machine *machine)
 {
-	SC_BUG_ON(ctx == NULL);
-    SC_BUG_ON(evt == NULL);
+	SC_ASSERT(machine != NULL);
 
-	struct sc_context *context;
-	context = (struct sc_context*)ctx;
+	machine->current = NULL;
+	machine->tran_info = NULL;
+}
+
+
+
+/*
+ * Dispatches an event to a state machine.
+ */
+void sc_dispatch(struct sc_machine *machine, void *m_data, const void *e_data)
+{
+	SC_ASSERT(machine != NULL);
+	SC_ASSERT(m_data != NULL);
+	SC_ASSERT(e_data != NULL);
 
 	/*
-	 * Corrupted context:
-	 * 1. make sure machine is initialized, and
-	 * 2. make sure first member of context is base context instance
+	 * Dispatch to current state and forward to its parents if needed.
 	 */
-	SC_BUG_ON(context->current == NULL);
-
-	const struct sc_state *iter;
-	enum sc_handler_result result;
-
-	for (iter = context->current; iter != NULL; iter = iter->parent)
+	for (const struct sc_state *iter = machine->current; iter != NULL; iter = iter->parent)
 	{
-		/*
-		 * Dispatch the event to the leaf state, if unhandled in leaf state, propagate up to its
-		 * parent state.
-		 */
+		/* default action is to forward when the state does not have a handler */
 		if (iter->handler != NULL)
 		{
-			result = iter->handler(ctx, evt);
-
-			if ((result == SC_HANDLER_RESULT_HANDLED) || (result == SC_HANDLER_RESULT_IGNORE))
-				break; /* stop the propagation */
+			/* break the loop if handler says no need to forward */
+			if (!is_forward_event(iter->handler(machine, m_data, e_data)))
+				break;
 		}
 	}
 }
 
-/*
- * Transitions from current state to target state
- */
-void sc_trans(void *ctx, const struct sc_state *target)
-{
-	SC_BUG_ON(ctx == NULL);
-	SC_BUG_ON(target == NULL);
 
-	struct sc_context *context;
-	context = (struct sc_context*)ctx;
+
+/*
+ * Makes a transition to target state with optional transition action.
+ * If 'target' is NULL, the state machine will return to its uninitialized state.
+ */
+void sc_tran(struct sc_machine *machine, void *m_data, const struct sc_state *target,
+		void (*action) (struct sc_machine *machine, void *m_data))
+{
+	SC_ASSERT(machine != NULL);
+	SC_ASSERT(m_data != NULL);
+
+	/* if the assertion fails, a transition is likely being made in entry/exit handlers, which is
+	 * forbidden. */
+	SC_ASSERT(machine->tran_info == NULL);
+
+	/* dynamically allocate on the stack */
+	struct sc_tran_info tran_info;
+	tran_info.source = machine->current;
+	tran_info.target = target;
+	tran_info.last_exited = NULL;
+	tran_info.last_entered = NULL;
+
+	machine->tran_info = &tran_info;
 
 	/*
 	 * Implements a lowest common ancestor (LCA) search algorithm
-	 *
-	 * Time complexity is O(h) where h is the height of the tree.
-	 * The purpose is to find a path that exits the source state and enters into the target state.
-	 *
-	 * See an animation of this algorithm here.
-	 * https://thimbleby.gitlab.io/algorithm-wiki-site/wiki/lowest_common_ancestor/
-	 *
-	 * The search starts with writing source state and all its parents into array exit_chain, then
-	 * searching for target or its parent in exit_chain while saving target and its parent into
-	 * enter_chain.
 	 */
-	const struct sc_state *exit_chain[SC_MAX_DEPTH];
-	const struct sc_state *enter_chain[SC_MAX_DEPTH];
 
-	size_t exit_index, exit_depth;
-	size_t enter_index, enter_depth;
+	/* record target path to root and target entry needs to be performed in reverse */
+	const struct sc_state *target_path[SC_MAX_LIST];
+	size_t target_path_size;
+	target_path_size = path_to_root(target, target_path);
 
-	enter_depth = 0U;
-	enter_index = 0U;
-	exit_depth = 0U;
-	exit_index = 0U;
-
-	/* from source state to its topmost state */
-	for (const struct sc_state *iter = context->current; iter != NULL; iter = iter->parent)
+	/* Search for a vertex in the source path that matches that in the target path. If not found,
+	 * the whole source path will need to be exited and the whole target path will need to be
+	 * entered. */
+	size_t entry_depth = target_path_size;
+	for (const struct sc_state *iter = machine->current; iter != NULL; iter = iter->parent)
 	{
-		/* source state nested too deep. Increase SC_MAX_DEPTH! */
-		SC_BUG_ON(exit_index >= SC_MAX_DEPTH);
+		entry_depth = find_vertex(iter, target_path, target_path_size);
 
-		exit_chain[exit_index++] = iter;
+		/* returned a valid index meaning a match is found in the target path */
+		if (entry_depth < target_path_size)
+			break;
+
+		/* exit source path vertex */
+		if (iter->exit != NULL)
+			iter->exit(machine, m_data);
+
+		tran_info.last_exited = iter;
 	}
 
-	exit_depth = exit_index;
+	/* perform transition action */
+	if (action != NULL)
+		action(machine, m_data);
 
-	/* from target state to LCA, or target's topmost state */
-	for (const struct sc_state *iter = target; iter != NULL; iter = iter->parent)
+	/* descend into target state */
+	for ( ; entry_depth > (size_t) 0; --entry_depth)
 	{
-		/* Target state nested too deep. Increase SC_MAX_DEPTH! */
-		SC_BUG_ON(enter_index >= SC_MAX_DEPTH);
+		if (target_path[entry_depth - (size_t) 1]->entry != NULL)
+			target_path[entry_depth - (size_t) 1]->entry(machine, m_data);
 
-		enter_chain[enter_index] = iter;
-
-		for (size_t counter = 0U; counter < exit_index; counter++)
-		{
-			/* LCA found */
-			if (exit_chain[counter] == iter)
-			{
-				exit_depth = counter;
-				break;
-			}
-		}
-
-		enter_index++;
+		tran_info.last_entered = target_path[entry_depth - (size_t) 1];
 	}
 
-	enter_depth = enter_index;
+	/* descend into target state's default child state */
+	const struct sc_state *current = target;
+	for (const struct sc_state *iter = target->child; iter != NULL; iter = iter->child)
+	{
+		if (iter->entry != NULL)
+			iter->entry(machine, m_data);
 
-    const struct sc_state *state;
+		current = iter;
+		tran_info.last_entered = iter;
+	}
 
-    /* exit source state */
-    for (size_t counter = 0U; counter < exit_depth; counter++)
-    {
-        state = exit_chain[counter];
+	/* update current state */
+	machine->current = current;
 
-        if( state->exit != NULL )
-            state->exit(ctx);
-    }
+	/* Transition complete. "Deallocate" transition info */
+	machine->tran_info = NULL;
+}
 
-    /* enter target state */
-    for (size_t counter = enter_depth; counter > 0U; counter--)
-    {
-        state = enter_chain[counter-1U];
 
-        if( state->entry != NULL )
-            state->entry(ctx);
-    }
 
-    /* enter default child state */
-    const struct sc_state *current = target;
-    for (const struct sc_state *iter = target->child; iter != NULL; iter = iter->child)
-    {
-        if (iter->entry != NULL)
-            iter->entry(ctx);
-        
-        current = iter;
-    }
+/*
+ * Returns pointer to the transition object during a transition, otherwise NULL
+ */
+const struct sc_tran_info* sc_ongoing_tran_info(struct sc_machine *machine)
+{
+	SC_ASSERT(machine != NULL);
+	return machine->tran_info;
+}
 
-    /* update current state */
-    context->current = current;
+
+
+/*
+ * Returns true if event needs to be forwarded to parent based on the result returned by state
+ * handler.
+ */
+static bool is_forward_event(enum sc_result handler_result)
+{
+	bool ret;
+
+	if (handler_result == SC_UNHANDLED)
+		ret = true;
+
+	else if (handler_result == SC_HANDLED)
+		ret = true;
+
+	else if (handler_result == SC_DISCARD)
+		ret = false;
+
+	else if (handler_result == SC_FORWARD)
+		ret = true;
+
+	else
+	{
+		/* should not reach here */
+		SC_ASSERT(0);
+		ret = true;
+	}
+
+	return ret;
+}
+
+
+
+/*
+ * Fills 'path' with vertices ascending from 'vertex' to root and return the number of elements in
+ * it.
+ */
+static size_t path_to_root(const struct sc_state *vertex, const struct sc_state *path[])
+{
+	SC_ASSERT(path != NULL);
+
+	size_t index = (size_t) 0;
+	for (const struct sc_state *iter = vertex; iter != NULL; iter = iter->parent)
+	{
+		SC_ASSERT(index < SC_MAX_LIST);
+		path[index++] = iter;
+	}
+
+	return index;
+}
+
+
+
+/*
+ * Searches for 'vertex' in the valid data region of 'list' and returns the index of the first
+ * encounter if found. If 'vertex' is not found in 'list', returns an invalid index.
+ */
+static size_t find_vertex(const struct sc_state *vertex, const struct sc_state *const list[],
+		size_t valid_data)
+{
+	size_t index;
+
+	SC_ASSERT(list != NULL);
+
+	for (index = (size_t) 0; index < valid_data; ++index)
+	{
+		if (vertex == list[index])
+			break;
+	}
+
+	return index;
 }
